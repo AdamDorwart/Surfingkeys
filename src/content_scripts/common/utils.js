@@ -1,6 +1,70 @@
-import * as DOMPurify from 'dompurify';
+import DOMPurify from "dompurify";
 import KeyboardUtils from './keyboardUtils';
 import { RUNTIME, dispatchSKEvent, runtime } from './runtime.js';
+
+/**
+ * Map the key sequence `lhs` to `rhs` for mode `ctx` in ACE editor.
+ *
+ * @param {string} lhs a key sequence to replace
+ * @param {string} rhs a key sequence to be replaced
+ * @param {string} ctx a mode such as `insert`, `normal`.
+ *
+ * @example aceVimMap('J', ':bn', 'normal');
+ */
+function aceVimMap(lhs, rhs, ctx) {
+    dispatchSKEvent("front", ['addVimMap', lhs, rhs, ctx]);
+}
+
+/**
+ * Add map key in ACE editor.
+ *
+ * @param {object} objects multiple objects to define key map in ACE, see more from [ace/keyboard/vim.js](https://github.com/ajaxorg/ace/blob/ec450c03b51aba3724cf90bb133708078d1f3de6/lib/ace/keyboard/vim.js#L927-L1099)
+ *
+ * @example
+ * addVimMapKey(
+ *     {
+ *         keys: 'n',
+ *         type: 'motion',
+ *         motion: 'moveByCharacters',
+ *         motionArgs: {
+ *             forward: false
+ *         }
+ *     },
+ *
+ *     {
+ *         keys: 'e',
+ *         type: 'motion',
+ *         motion: 'moveByLines',
+ *         motionArgs: {
+ *             forward: true,
+ *             linewise: true
+ *         }
+ *     }
+ * );
+ */
+function addVimMapKey() {
+    dispatchSKEvent("front", ['addVimKeyMap', Array.from(arguments)]);
+}
+
+function isEmptyObject(obj) {
+    for (var name in obj) {
+        return false;
+    }
+    return true;
+}
+
+function applyUserSettings(delta) {
+    if (delta.error !== "") {
+        if (window === top) {
+            showPopup("[SurfingKeys] Error found in settings: " + delta.error);
+        } else {
+            console.log("[SurfingKeys] Error found in settings({0}): {1}".format(window.location.href, delta.error));
+        }
+    }
+    if (!isEmptyObject(delta.settings)) {
+        dispatchSKEvent("front", ['applySettingsFromSnippets', delta.settings]);
+    }
+}
 
 /**
  * Get current browser name
@@ -21,7 +85,7 @@ function getBrowserName() {
 }
 
 function isInUIFrame() {
-    return document.location.href.indexOf(chrome.extension.getURL("/")) === 0;
+    return window !== top && document.location.href.indexOf(chrome.runtime.getURL("/")) === 0;
 }
 
 function timeStampString(t) {
@@ -93,7 +157,7 @@ function isElementClickable(e) {
  * Front.showBanner(window.location.href);
  */
 function showBanner(msg, timeout) {
-    dispatchSKEvent('showBanner', [msg, timeout])
+    dispatchSKEvent("front", ['showBanner', msg, timeout])
 }
 
 /**
@@ -106,7 +170,29 @@ function showBanner(msg, timeout) {
  * Front.showPopup(window.location.href);
  */
 function showPopup(msg) {
-    dispatchSKEvent('showPopup', [msg])
+    dispatchSKEvent("front", ['showPopup', msg])
+}
+
+function initSKFunctionListener(name, interfaces, capture) {
+    const callbacks = {};
+
+    const opts = capture ? {capture: true} : {};
+    document.addEventListener(`surfingkeys:${name}`, function(evt) {
+        let args = evt.detail;
+        const fk = args.shift();
+        if (capture) {
+            args.push(evt.target);
+        }
+
+        if (callbacks.hasOwnProperty(fk)) {
+            callbacks[fk](...args);
+            delete callbacks[fk];
+        } if (interfaces.hasOwnProperty(fk)) {
+            interfaces[fk](...args);
+        }
+    }, opts);
+
+    return callbacks;
 }
 
 function dispatchMouseEvent(element, events, shiftKey) {
@@ -115,6 +201,7 @@ function dispatchMouseEvent(element, events, shiftKey) {
         var event = new MouseEvent(eventName, {
             bubbles: true,
             cancelable: true,
+            composed: true,
             view: window,
             button: mouseButton
         });
@@ -148,16 +235,6 @@ function toggleQuote() {
     } else {
         elm.value = '"' + val + '"';
     }
-}
-
-function LOG(level, msg) {
-    // To turn on all levels: chrome.storage.local.set({"logLevels": ["log", "warn", "error"]})
-    chrome.storage.local.get(["logLevels"], (r) => {
-        const logLevels = r && r.logLevels || ["error"];
-        if (["log", "warn", "error"].indexOf(level) !== -1 && logLevels.indexOf(level) !== -1) {
-            console[level](msg);
-        }
-    });
 }
 
 function isEditable(element) {
@@ -265,10 +342,6 @@ function actionWithSelectionPreserved(cb) {
         selection.setPosition(pos[1], pos[2]);
         selection.extend(pos[3], pos[4]);
     }
-}
-
-function last(array) {
-    return array[array.length - 1];
 }
 
 function filterAncestors(elements) {
@@ -409,7 +482,7 @@ function getTextNodes(root, pattern, flag) {
 function getTextNodePos(node, offset, length) {
     var selection = document.getSelection();
     selection.setBaseAndExtent(node, offset, node, length ? (offset + length) : node.data.length);
-    var br = selection.getRangeAt(0).getClientRects()[0];
+    var br = selection.rangeCount > 0 ? selection.getRangeAt(0).getClientRects()[0] : null;
     var pos = {
         left: -1,
         top: -1
@@ -444,6 +517,33 @@ function getTextRect() {
         return [];
     }
     return rects;
+}
+
+function locateFocusNode(selection) {
+    let se = selection.focusNode.parentElement
+    scrollIntoViewIfNeeded(se, true);
+    var r = getTextRect(selection.focusNode, selection.focusOffset)[0];
+    if (!r) {
+        r = selection.focusNode.getBoundingClientRect();
+    }
+    if (r) {
+        r = {
+            left: r.left,
+            top: r.top,
+            width: r.width,
+            height: r.height
+        };
+        if (r.left < 0 || r.left >= window.innerWidth) {
+            se.scrollLeft += r.left - window.innerWidth / 2;
+            r.left = window.innerWidth / 2;
+        }
+        if (r.top < 0 || r.top >= window.innerHeight) {
+            se.scrollTop += r.top - window.innerHeight / 2;
+            r.top = window.innerHeight / 2;
+        }
+        return r;
+    }
+    return null;
 }
 
 function getNearestWord(text, offset) {
@@ -504,13 +604,13 @@ DOMRect.prototype.has = function (x, y, ex, ey) {
 };
 
 function initL10n(cb) {
-    var lang = runtime.conf.language || window.navigator.language;
+    const lang = runtime.conf.language || window.navigator.language;
     if (lang === "en-US") {
         cb(function(str) {
             return str;
         });
     } else {
-        fetch(chrome.extension.getURL("pages/l10n.json")).then(function(res) {
+        fetch(chrome.runtime.getURL("pages/l10n.json")).then(function(res) {
             return res.json();
         }).then(function(l10n) {
             if (typeof(l10n[lang]) === "object") {
@@ -551,11 +651,18 @@ if (!Array.prototype.flatMap) {
 }
 
 function parseAnnotation(ag) {
-    var annotations = ag.annotation.match(/#(\d+)(.*)/);
+    let an = ag.annotation;
+    if (an.constructor.name === "String") {
+        // for parameterized annotations such as ["#6Search selected with {0}", "Google"]
+        an = [an];
+    }
+    const annotations = an[0].match(/^#(\d+)(.*)/);
     if (annotations !== null) {
         ag.feature_group = parseInt(annotations[1]);
-        ag.annotation = annotations[2];
+        an[0] = annotations[2];
     }
+    // first element must not be ""
+    ag.annotation = an[0].length === 0 ? "" : an;
     return ag;
 }
 
@@ -572,7 +679,7 @@ function mapInMode(mode, nks, oks, new_annotation) {
         }
         mode.mappings.add(nks, meta);
         if (!isInUIFrame()) {
-            dispatchSKEvent('addMapkey', [mode.name, nks, oks]);
+            dispatchSKEvent("front", ['addMapkey', mode.name, nks, oks]);
         }
     }
     return old_map;
@@ -749,32 +856,6 @@ function httpRequest(args, onSuccess) {
     RUNTIME("request", args, onSuccess);
 }
 
-/**
- * Insert javascript code into main world context.
- *
- * @param {function | string} code a javascript function to be executed in main world context, or an URL of js file.
- * @param {function} onload a callback function after requested code executed.
- *
- */
-function insertJS(code, onload) {
-    var s = document.createElement('script');
-    s.type = 'text/javascript';
-    if (typeof(code) === 'function') {
-        setSanitizedContent(s, "(" + code.toString() + ")(window);");
-        setTimeout(function() {
-            onload && onload();
-            s.remove();
-        }, 1);
-    } else {
-        s.src = code;
-        s.onload = function() {
-            onload && onload();
-            s.remove();
-        };
-    }
-    document.lastElementChild.appendChild(s);
-}
-
 const flashElem = createElementWithContent('div', '', {style: "position: fixed; box-shadow: 0px 0px 4px 2px #63b2ff; background: transparent; z-index: 2140000000"});
 function flashPressedLink(link, cb) {
     var rect = getRealRect(link);
@@ -788,21 +869,6 @@ function flashPressedLink(link, cb) {
         flashElem.remove();
         cb();
     }, 100);
-}
-
-function regexFromString(str, highlight) {
-    var rxp = null;
-    const flags = runtime.getCaseSensitive(str) ? "g" : "gi";
-    str = str.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&');
-    if (highlight) {
-        rxp = new RegExp(str.replace(/\s+/, "\|"), flags);
-    } else {
-        var words = str.split(/\s+/).map(function(w) {
-            return `(?=.*${w})`;
-        }).join('');
-        rxp = new RegExp(`^${words}.*$`, flags);
-    }
-    return rxp;
 }
 
 function safeDecodeURI(url) {
@@ -819,16 +885,6 @@ function safeDecodeURIComponent(url) {
     } catch (e) {
         return url;
     }
-}
-
-function filterByTitleOrUrl(urls, query) {
-    if (query && query.length) {
-        var rxp = regexFromString(query, false);
-        urls = urls.filter(function(b) {
-            return rxp.test(b.title) || rxp.test(safeDecodeURI(b.url));
-        });
-    }
-    return urls;
 }
 
 function getCssSelectorsOfEditable() {
@@ -868,7 +924,7 @@ function refreshHints(hints, pressedKeys) {
 function attachFaviconToImgSrc(tab, imgEl) {
     const browserName = getBrowserName();
     if (browserName === "Chrome") {
-        imgEl.src = `chrome://favicon/${tab.url}`;
+        imgEl.src = chrome.runtime.getURL(`/_favicon/?pageUrl=${encodeURIComponent(tab.url)}`);
     } else if (browserName.startsWith("Safari")) {
         imgEl.src = new URL(tab.url).origin + "/favicon.ico";
     } else {
@@ -877,15 +933,16 @@ function attachFaviconToImgSrc(tab, imgEl) {
 }
 
 export {
-    LOG,
+    aceVimMap,
     actionWithSelectionPreserved,
+    addVimMapKey,
+    applyUserSettings,
     attachFaviconToImgSrc,
     constructSearchURL,
     createElementWithContent,
     dispatchMouseEvent,
     dispatchSKEvent,
     filterAncestors,
-    filterByTitleOrUrl,
     filterInvisibleElements,
     filterOverlapElements,
     flashPressedLink,
@@ -906,16 +963,17 @@ export {
     htmlEncode,
     httpRequest,
     initL10n,
-    insertJS,
+    initSKFunctionListener,
     isEditable,
     isElementClickable,
+    isElementDrawn,
     isElementPartiallyInViewport,
     isInUIFrame,
     listElements,
+    locateFocusNode,
     mapInMode,
     parseAnnotation,
     refreshHints,
-    regexFromString,
     reportIssue,
     safeDecodeURI,
     safeDecodeURIComponent,

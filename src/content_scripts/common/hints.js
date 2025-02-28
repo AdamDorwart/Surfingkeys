@@ -10,12 +10,13 @@ import {
     getBrowserName,
     getClickableElements,
     getCssSelectorsOfEditable,
-    getElements,
     getRealRect,
     getTextNodePos,
     getVisibleElements,
+    initSKFunctionListener,
     isEditable,
     isElementClickable,
+    isElementDrawn,
     refreshHints,
     setSanitizedContent,
 } from './utils.js';
@@ -171,11 +172,76 @@ div.hint-scrollable {
         }
     });
 
+    /**
+     * The default `onHintKey` implementation.
+     *
+     * @param {HTMLElement} element the element for which the pressed hint is targeted.
+     * @name Hints.dispatchMouseClick
+     * @see Hints.create
+     *
+     * @example
+     * mapkey('q', 'click on images', function() {
+     *     Hints.create("div.media_box img", Hints.dispatchMouseClick);
+     * }, {domain: /weibo.com/i});
+     */
+    self.dispatchMouseClick = function(element) {
+        if (isEditable(element)) {
+            self.exit();
+            normal.passFocus(true);
+            element.focus();
+            insert.enter(element);
+        } else {
+            if (!behaviours.multipleHits) {
+                self.exit();
+            }
+            var tabbed = behaviours.tabbed, active = behaviours.active;
+            if (behaviours.multipleHits) {
+                const href = element.getAttribute('href');
+                if (href !== null && href !== "#") {
+                    tabbed = true;
+                    active = false;
+                }
+            }
+
+            if (shiftKey && runtime.conf.hintShiftNonActive) {
+                tabbed = true;
+                active = false;
+            } else if (shiftKey && getBrowserName() === "Firefox") {
+                // mouseButton does not work for firefox in mouse event.
+                tabbed = true;
+                active = true;
+            }
+
+            flashPressedLink(element,() => {
+                if (tabbed) {
+                    RUNTIME("openLink", {
+                        tab: {
+                            tabbed: tabbed,
+                            active: active
+                        },
+                        url: getHref(element)
+                    });
+                } else {
+                    self.mouseoutLastElement();
+                    dispatchMouseEvent(element, behaviours.mouseEvents, shiftKey);
+                    dispatchSKEvent("observer", ['turnOn']);
+                    lastMouseTarget = element;
+                }
+
+                if (behaviours.multipleHits) {
+                    setTimeout(resetHints, 300);
+                }
+            });
+        }
+        element.classList.remove("surfingkeys--hints--clicking");
+    };
+
+    const MOUSE_EVENTS = ['mouseover', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'focus', 'focusin'];
     var prefix = "",
         textFilter = "",
         lastMouseTarget = null,
         behaviours = {
-            mouseEvents: ['mouseover', 'mousedown', 'mouseup', 'click']
+            mouseEvents: MOUSE_EVENTS
         },
         holder = createElementWithContent('section', '', {style: "display: block; opacity: 1;"}),
         shiftKey = false;
@@ -203,7 +269,11 @@ div.hint-scrollable {
         const hintState = refreshHints(hints, prefix);
         if (hintState.matched) {
             normal.appendKeysForRepeat("Hints", prefix);
-            _onHintKey(hintState.matched);
+            if (typeof(_onHintKey) === 'function') {
+                _onHintKey(hintState.matched);
+            } else {
+                dispatchSKEvent('user', ["onHintClicked"], hintState.matched);
+            }
             if (behaviours.multipleHits) {
                 prefix = "";
                 refreshHints(hints, prefix);
@@ -248,7 +318,7 @@ div.hint-scrollable {
         behaviours = {
             active: true,
             tabbed: false,
-            mouseEvents: ['mouseover', 'mousedown', 'mouseup', 'click'],
+            mouseEvents: ['mouseover', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'focus', 'focusin'],
             multipleHits: false
         };
         setSanitizedContent(holder, "");
@@ -274,14 +344,8 @@ div.hint-scrollable {
         }
     }
 
-    function onScrollStarted(evt) {
-        setSanitizedContent(holder, "");
-        holder.remove();
-        prefix = "";
-    }
-
     function resetHints() {
-        if (!document.documentElement.contains(hintsHost)) {
+        if (Mode.getCurrent() !== self || !document.documentElement.contains(hintsHost)) {
             return;
         }
         var start = new Date().getTime();
@@ -376,34 +440,32 @@ div.hint-scrollable {
         }
     };
 
-    document.addEventListener("surfingkeys:topBoundaryHit", self.previousPage);
-    document.addEventListener("surfingkeys:bottomBoundaryHit", self.nextPage);
-
-    self.onEnter = function() {
-        document.addEventListener("surfingkeys:scrollStarted", onScrollStarted);
-        document.addEventListener("surfingkeys:scrollDone", resetHints);
-    };
-
-    self.onExit = function() {
-        document.removeEventListener("surfingkeys:scrollStarted", onScrollStarted);
-        document.removeEventListener("surfingkeys:scrollDone", resetHints);
-    };
+    initSKFunctionListener("hints", {
+        scrollStarted: () => {
+            if (Mode.getCurrent() !== self || !document.documentElement.contains(hintsHost)) {
+                return;
+            }
+            setSanitizedContent(holder, "");
+            holder.remove();
+            prefix = "";
+        },
+        scrollDone: resetHints,
+        topBoundaryHit: self.previousPage,
+        bottomBoundaryHit: self.nextPage,
+        dispatchMouseClick: self.dispatchMouseClick,
+    }, true);
 
     self.genLabels = function(total) {
-        var ch, hint, hints, i, len, offset;
-        hints = [""];
-        offset = 0;
-        while (hints.length - offset < total || hints.length === 1) {
-            hint = hints[offset++];
-            for (i = 0, len = characters.length; i < len; i++) {
-                ch = characters[i];
-                hints.push(ch + hint);
+        let chars = characters.toUpperCase();
+        var hints = [""], offset = 0;
+        while (hints.length - offset < total || offset == 0) {
+            var prefix = hints[offset++];
+            for (var i = 0; i < chars.length; i++) {
+                hints.push(prefix + chars[i]);
             }
         }
         hints = hints.slice(offset, offset + total);
-        return hints.map(function(str) {
-            return str.reverse().toUpperCase();
-        });
+        return hints
     };
 
     self.coordinate = function() {
@@ -479,7 +541,7 @@ div.hint-scrollable {
         attrs = Object.assign({
             active: true,
             tabbed: false,
-            mouseEvents: ['mouseover', 'mousedown', 'mouseup', 'click'],
+            mouseEvents: MOUSE_EVENTS,
             multipleHits: false,
             filterInvisible: true
         }, attrs || {});
@@ -503,7 +565,7 @@ div.hint-scrollable {
         attrs = Object.assign({
             active: true,
             tabbed: false,
-            mouseEvents: ['mouseover', 'mousedown', 'mouseup', 'click'],
+            mouseEvents: MOUSE_EVENTS,
             multipleHits: false
         }, attrs || {});
         for (var attr in attrs) {
@@ -627,8 +689,16 @@ div.hint-scrollable {
         return elements.length;
     }
 
+    function placeHintsHost() {
+        let topLayerElement = document.querySelector("dialog");
+        if (!topLayerElement || !isElementDrawn(topLayerElement)) {
+            topLayerElement = document.documentElement;
+        }
+        topLayerElement.appendChild(hintsHost);
+    }
+
     function createHints(cssSelector, attrs) {
-        document.documentElement.appendChild(hintsHost);
+        placeHintsHost();
         if (cssSelector.constructor.name === "RegExp") {
             return createHintsForTextNode(cssSelector, attrs);
         } else if (Array.isArray(cssSelector)) {
@@ -638,7 +708,7 @@ div.hint-scrollable {
     }
 
     self.createInputLayer = function() {
-        document.documentElement.appendChild(hintsHost);
+        placeHintsHost();
         const cssSelector = getCssSelectorsOfEditable();
 
         var elements = getVisibleElements(function(e, v) {
@@ -731,68 +801,6 @@ div.hint-scrollable {
         return found > 0;
     };
 
-    /**
-     * The default `onHintKey` implementation.
-     *
-     * @param {HTMLElement} element the element for which the pressed hint is targeted.
-     * @name Hints.dispatchMouseClick
-     * @see Hints.create
-     *
-     * @example
-     * mapkey('q', 'click on images', function() {
-     *     Hints.create("div.media_box img", Hints.dispatchMouseClick);
-     * }, {domain: /weibo.com/i});
-     */
-    self.dispatchMouseClick = function(element, event) {
-        if (isEditable(element)) {
-            self.exit();
-            normal.passFocus(true);
-            element.focus();
-            insert.enter(element);
-        } else {
-            if (!behaviours.multipleHits) {
-                self.exit();
-            }
-            var tabbed = behaviours.tabbed, active = behaviours.active;
-            if (behaviours.multipleHits) {
-                const href = element.getAttribute('href');
-                if (href !== null && href !== "#") {
-                    tabbed = true;
-                    active = false;
-                }
-            }
-
-            if (shiftKey && runtime.conf.hintShiftNonActive) {
-                tabbed = true;
-                active = false;
-            } else if (shiftKey && getBrowserName() === "Firefox") {
-                // mouseButton does not work for firefox in mouse event.
-                tabbed = true;
-                active = true;
-            }
-
-            flashPressedLink(element,() => {
-                if (tabbed) {
-                    RUNTIME("openLink", {
-                        tab: {
-                            tabbed: tabbed,
-                            active: active
-                        },
-                        url: getHref(element)
-                    });
-                } else {
-                    self.mouseoutLastElement();
-                    dispatchMouseEvent(element, behaviours.mouseEvents, shiftKey);
-                    dispatchSKEvent('turnOnDOMObserver');
-                    lastMouseTarget = element;
-                }
-
-                if (behaviours.multipleHits) {
-                    setTimeout(resetHints, 300);
-                }
-            });
-        }
-    };
     self.mouseoutLastElement = function() {
         if (lastMouseTarget) {
             dispatchMouseEvent(lastMouseTarget, ['mouseout'], false);

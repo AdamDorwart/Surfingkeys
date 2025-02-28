@@ -12,6 +12,7 @@ import {
     getTextRect,
     getVisibleElements,
     getWordUnderCursor,
+    locateFocusNode,
     scrollIntoViewIfNeeded,
     setSanitizedContent,
     tabOpenLink,
@@ -189,7 +190,7 @@ function createVisual(clipboard, hints) {
             }
             if (matches.length) {
                 currentOccurrence = matches.length - 1;
-                dispatchSKEvent('showStatus', [[undefined, undefined, currentOccurrence + 1 + ' / ' + matches.length]]);
+                dispatchSKEvent("front", ['showStatus', [undefined, undefined, currentOccurrence + 1 + ' / ' + matches.length]]);
             }
         }
     });
@@ -203,7 +204,7 @@ function createVisual(clipboard, hints) {
             document.scrollingElement.scrollTop = 0;
             currentOccurrence = 0;
             if (matches.length) {
-                dispatchSKEvent('showStatus', [[undefined, undefined, currentOccurrence + 1 + ' / ' + matches.length]]);
+                dispatchSKEvent("front", ['showStatus', [undefined, undefined, currentOccurrence + 1 + ' / ' + matches.length]]);
             }
 
             if (getBrowserName() !== "Firefox") {
@@ -455,7 +456,7 @@ function createVisual(clipboard, hints) {
     self.hideCursor = function () {
         if (document.body.contains(cursor)) {
             cursor.remove();
-            dispatchSKEvent('cursorHidden');
+            dispatchSKEvent("front", ['hideBubble']);
         }
     };
 
@@ -463,27 +464,11 @@ function createVisual(clipboard, hints) {
         if (selection.focusNode && (selection.focusNode.offsetHeight > 0 || selection.focusNode.parentNode.offsetHeight > 0)) {
             // https://developer.mozilla.org/en-US/docs/Web/API/Selection
             // If focusNode is a text node, this is the number of characters within focusNode preceding the focus. If focusNode is an element, this is the number of child nodes of the focusNode preceding the focus.
-            scrollIntoViewIfNeeded(selection.focusNode.parentElement, true);
-
-            var r = getTextRect(selection.focusNode, selection.focusOffset)[0];
-            if (!r) {
-                r = selection.focusNode.getBoundingClientRect();
-            }
+            let r = locateFocusNode(selection)
             if (r) {
                 cursor.style.position = "fixed";
                 cursor.style.left = r.left + 'px';
-                if (r.left < 0 || r.left >= window.innerWidth) {
-                    document.scrollingElement.scrollLeft += r.left - window.innerWidth / 2;
-                    cursor.style.left = window.innerWidth / 2 + 'px';
-                } else {
-                    cursor.style.left = r.left + 'px';
-                }
-                if (r.top < 0 || r.top >= window.innerHeight) {
-                    document.scrollingElement.scrollTop += r.top - window.innerHeight / 2;
-                    cursor.style.top = window.innerHeight / 2 + 'px';
-                } else {
-                    cursor.style.top = r.top + 'px';
-                }
+                cursor.style.top = r.top + 'px';
                 cursor.style.height = r.height + 'px';
             }
 
@@ -571,7 +556,12 @@ function createVisual(clipboard, hints) {
         });
         var scrollTop = document.scrollingElement.scrollTop;
         selection.setPosition(null, 0);
+        var lastNode = null
         while (findNextTextNodeBy(pattern.source, pattern.flags.indexOf('i') === -1, false)) {
+            if (lastNode == selection.anchorNode) {
+                break;
+            }
+            lastNode = selection.anchorNode
             if (selection.anchorNode !== selection.focusNode) {
                 createMatchMark(selection.anchorNode, selection.anchorOffset, selection.focusNode, selection.focusOffset);
             }
@@ -586,7 +576,7 @@ function createVisual(clipboard, hints) {
                     break;
                 }
             }
-            dispatchSKEvent('showStatus', [[undefined, undefined, currentOccurrence + 1 + ' / ' + matches.length]]);
+            dispatchSKEvent("front", ['showStatus', [undefined, undefined, currentOccurrence + 1 + ' / ' + matches.length]]);
         }
     }
 
@@ -600,25 +590,19 @@ function createVisual(clipboard, hints) {
         registeredScrollNodes = [];
         setSanitizedContent(markHolder_, "");
         markHolder_.remove();
-        dispatchSKEvent('showStatus', [[undefined, undefined, ""]]);
+        dispatchSKEvent("front", ['showStatus', [undefined, undefined, ""]]);
     };
 
     self.emptySelection = function() {
         document.getSelection().empty();
     };
 
-    function onCursorHiden() {
-        dispatchSKEvent('hideBubble');
-    }
-
     self.onEnter = function() {
-        document.addEventListener('surfingkeys:cursorHidden', onCursorHiden);
         _incState();
     };
 
     self.onExit = function() {
         self.visualClear();
-        document.removeEventListener('surfingkeys:cursorHidden', onCursorHiden);
     };
 
     function _onStateChange() {
@@ -693,7 +677,7 @@ function createVisual(clipboard, hints) {
             }
             currentOccurrence = (backward ? (matches.length + currentOccurrence - 1) : (currentOccurrence + 1)) % matches.length;
             select(matches[currentOccurrence]);
-            dispatchSKEvent('showStatus', [[undefined, undefined, currentOccurrence + 1 + ' / ' + matches.length]]);
+            dispatchSKEvent("front", ['showStatus', [undefined, undefined, currentOccurrence + 1 + ' / ' + matches.length]]);
         } else if (runtime.conf.lastQuery) {
             highlight(new RegExp(runtime.conf.lastQuery, "g" + (runtime.getCaseSensitive(runtime.conf.lastQuery) ? "" : "i")));
             self.visualEnter(runtime.conf.lastQuery);
@@ -771,7 +755,7 @@ function createVisual(clipboard, hints) {
             self.enter();
             select(matches[currentOccurrence]);
         } else {
-            dispatchSKEvent('showStatus', [[undefined, undefined, "Pattern not found: {0}".format(query)], 1000]);
+            dispatchSKEvent("front", ['showStatus', [undefined, undefined, "Pattern not found: {0}".format(query)], 1000]);
         }
         Mode.getScrollableElements().forEach(function(n) {
             if (n !== document.scrollingElement) {

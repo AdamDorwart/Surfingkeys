@@ -8,6 +8,7 @@ import {
     getWordUnderCursor,
     htmlEncode,
     initL10n,
+    initSKFunctionListener,
     refreshHints,
     setSanitizedContent,
     mapInMode
@@ -21,6 +22,7 @@ import createNormal from '../common/normal.js';
 import createVisual from '../common/visual.js';
 import createHints from '../common/hints.js';
 import createAPI from '../common/api.js';
+import createDefaultMappings from '../common/default.js';
 import createOmnibar from './omnibar.js';
 import createCommands from './command.js';
 
@@ -48,6 +50,7 @@ const Front = (function() {
     };
 
     const api = createAPI(clipboard, insert, normal, hints, visual, self, {});
+    createDefaultMappings(api, clipboard, insert, normal, hints, visual, self);
 
     var _actions = self._actions,
         _callbacks = {};
@@ -220,7 +223,6 @@ const Front = (function() {
                 } else {
                     clearInterval(inputGuard);
                 }
-                console.log(inputGuard);
             }, 100);
         }
     };
@@ -296,6 +298,16 @@ const Front = (function() {
             }
         });
     };
+    self.chooseTab = _actions['chooseTab'];
+
+    function localizeAnnotation(locale, annotation) {
+        if (annotation.constructor.name === "Array") {
+            const fmt = annotation[0];
+            return locale(fmt).format(...annotation.slice(1));
+        } else {
+            return locale(annotation);
+        }
+    }
 
     function buildUsage(metas, cb) {
         var feature_groups = [
@@ -320,12 +332,17 @@ const Front = (function() {
 
         initL10n(function(locale) {
             var help_groups = feature_groups.map(function(){return [];});
-            help_groups[0].push("<div><span class=kbd-span><kbd>&lt;Alt-s&gt;</kbd></span><span class=annotation>{0}</span></div>".format(locale("Toggle SurfingKeys on current site")));
+            const lh = Mode.specialKeys["<Alt-s>"].length;
+            if (lh > 0) {
+                help_groups[0].push("<div><span class=kbd-span><kbd>{0}</kbd></span><span class=annotation>{1}</span></div>".format(
+                    htmlEncode(Mode.specialKeys["<Alt-s>"][lh - 1]), locale("Toggle SurfingKeys on current site")));
+            }
 
             metas = metas.concat(getAnnotations(omnibar.mappings));
             metas.forEach(function(meta) {
-                var w = KeyboardUtils.decodeKeystroke(meta.word);
-                var item = `<div><span class=kbd-span><kbd>${htmlEncode(w)}</kbd></span><span class=annotation>${locale(meta.annotation)}</span></div>`;
+                const w = KeyboardUtils.decodeKeystroke(meta.word);
+                const annotation = localizeAnnotation(locale, meta.annotation);
+                const item = `<div><span class=kbd-span><kbd>${htmlEncode(w)}</kbd></span><span class=annotation>${annotation}</span></div>`;
                 help_groups[meta.feature_group].push(item);
             });
             help_groups = help_groups.map(function(g, i) {
@@ -395,10 +412,6 @@ const Front = (function() {
     _actions['showPopup'] = function(message) {
         showPopup(message.content);
     };
-
-    document.addEventListener("surfingkeys:showPopup", function(evt) {
-        showPopup(...evt.detail);
-    });
 
     self.vimMappings = [];
     let _aceEditor = null;
@@ -476,9 +489,6 @@ const Front = (function() {
     _actions['openFinder'] = function() {
         Find.open();
     };
-    document.addEventListener("surfingkeys:openFinder", function(evt) {
-        Find.open();
-    });
 
     function showBanner(content, linger_time) {
         _banner.style.cssText = "";
@@ -497,9 +507,6 @@ const Front = (function() {
     _actions['showBanner'] = function(message) {
         showBanner(message.content, message.linger_time);
     };
-    document.addEventListener("surfingkeys:showBanner", function(evt) {
-        showBanner(...evt.detail);
-    });
     _actions['showBubble'] = function(message) {
         var pos = message.position;
         pos.left += pos.winX;
@@ -563,8 +570,15 @@ const Front = (function() {
         StatusBar.show(message.contents, message.duration);
     };
 
-    document.addEventListener("surfingkeys:showStatus", function(evt) {
-        StatusBar.show(...evt.detail);
+    initSKFunctionListener("front", {
+        showPopup,
+        showBanner,
+        openFinder: () => {
+            Find.open();
+        },
+        showStatus: (contents, duration) => {
+            StatusBar.show(contents, duration);
+        },
     });
 
     self.toggleStatus = function(visible) {
@@ -597,15 +611,16 @@ const Front = (function() {
             clearPendingHint();
         }
     };
+
     function showRichHints(keyHints) {
         initL10n(function (locale) {
             var words = keyHints.accumulated;
             var cc = keyHints.candidates;
             words = Object.keys(cc).sort().map(function (w) {
-                var meta = cc[w];
-                if (meta.annotation) {
+                const annotation = localizeAnnotation(locale, cc[w].annotation);
+                if (annotation) {
                     const nextKey = w.substr(keyHints.accumulated.length);
-                    return `<div><span class=kbd-span><kbd>${htmlEncode(KeyboardUtils.decodeKeystroke(keyHints.accumulated))}<span class=candidates>${htmlEncode(KeyboardUtils.decodeKeystroke(nextKey))}</span></kbd></span><span class=annotation>${locale(meta.annotation)}</span></div>`;
+                    return `<div><span class=kbd-span><kbd>${htmlEncode(KeyboardUtils.decodeKeystroke(keyHints.accumulated))}<span class=candidates>${htmlEncode(KeyboardUtils.decodeKeystroke(nextKey))}</span></kbd></span><span class=annotation>${annotation}</span></div>`;
                 } else {
                     return "";
                 }
@@ -1071,7 +1086,7 @@ function createAceEditor(normal, front) {
         };
         vim.defineEx("wq", "wq", wq);
         vim.defineEx("x", "x", wq);
-        vim.map('<CR>', ':wq', 'normal');
+        vim.map('<CR>', ':wq<CR>', 'normal');
         vim.defineEx("bnext", "bn", function(cm, input) {
             front.contentCommand({
                 action: 'nextEdit',
@@ -1159,17 +1174,17 @@ function createAceEditor(normal, front) {
                 vim.unmap('<CR>', 'insert');
                 vim.unmap('<C-CR>', 'insert');
                 if (message.type === 'url') {
-                    vim.map('<CR>', ':wq', 'insert');
+                    vim.map('<CR>', '<Esc>:wq<CR>', 'insert');
                     _ace.setOption('showLineNumbers', false);
                     _ace.language_tools.setCompleters([createUrlCompleter()]);
                     _ace.container.style.height = "30%";
                 } else if (message.type === 'input') {
-                    vim.map('<CR>', ':wq', 'insert');
+                    vim.map('<CR>', '<Esc>:wq<CR>', 'insert');
                     _ace.setOption('showLineNumbers', false);
                     _ace.language_tools.setCompleters([pageWordCompleter]);
                     _ace.container.style.height = "16px";
                 } else {
-                    vim.map('<C-CR>', ':wq', 'insert');
+                    vim.map('<C-CR>', '<Esc>:wq<CR>', 'insert');
                     _ace.setOption('showLineNumbers', true);
                     _ace.language_tools.setCompleters([pageWordCompleter]);
                     _ace.container.style.height = "30%";
